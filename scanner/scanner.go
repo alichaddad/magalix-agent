@@ -65,32 +65,28 @@ type Scanner struct {
 // deprecated: please use entities/EntitiesWatcher instead
 // InitScanner creates a new scanner then Start it
 func InitScanner(
+	conf *utils.AgentConfig,
 	client *client.Client,
 	resourcesProvider ResourcesProvider,
-	skipNamespaces []string,
-	accountID uuid.UUID,
-	clusterID uuid.UUID,
-	optInAnalysisData bool,
-	analysisDataInterval time.Duration,
 ) *Scanner {
 	scanner := &Scanner{
 		client:            client,
 		logger:            client.Logger,
 		resourcesProvider: resourcesProvider,
-		skipNamespaces:    skipNamespaces,
-		accountID:         accountID,
-		clusterID:         clusterID,
+		skipNamespaces:    conf.SkipNamespaces,
+		accountID:         conf.AccountId,
+		clusterID:         conf.ClusterId,
 		history:           NewHistory(),
 
-		optInAnalysisData: optInAnalysisData,
+		optInAnalysisData: conf.OptInAnalysisData,
 
 		mutex: &sync.Mutex{},
 		dones: make([]chan struct{}, 0),
 	}
-	if optInAnalysisData {
+	if conf.OptInAnalysisData {
 		scanner.analysisDataSender = utils.Throttle(
 			"analysis-data",
-			analysisDataInterval,
+			conf.AnalysisDataInterval,
 			2, // we call analysisDataSender twice in each tick
 			func(args ...interface{}) {
 				if data, ok := args[0].(map[string]interface{}); ok {

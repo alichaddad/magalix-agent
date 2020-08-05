@@ -1,10 +1,10 @@
 package utils
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -21,128 +21,49 @@ func SetLogger(logger *log.Logger) {
 	stderr = logger
 }
 
-func ExpandEnv(
-	args map[string]interface{},
-	flag string,
-	allowEmpty bool,
-) string {
-	defer func() {
-		tears := recover()
-		if tears != nil {
-			panic(fmt.Sprintf("invalid docopt for %s", flag))
-		}
-	}()
-
-	key, ok := args[flag].(string)
-	if !ok || len(key) == 0 {
-		if allowEmpty {
-			return ""
-		}
-
-		stderr.Fatalf(nil, "no flag value %s specified", flag)
-		os.Exit(1)
-	}
-
+func ExpandEnv(ref *string) {
+	key := *ref
 	if key[0] != '$' {
-		return key
+		return
 	}
 
 	value := os.Getenv(key[1:])
 	if len(value) == 0 {
-		stderr.Fatalf(
-			nil,
-			"no such environment variable: %s (specified as %s flag)",
-			key, flag,
-		)
+		stderr.Fatalf(nil, "Environment variable %s not found or empty", key)
 		os.Exit(1)
 	}
 
-	return value
+	*ref = value
 }
 
-func ExpandEnvUUID(
-	args map[string]interface{},
-	flag string,
-) uuid.UUID {
-	defer func() {
-		tears := recover()
-		if tears != nil {
-			panic(fmt.Sprintf("invalid docopt for %s", flag))
-		}
-	}()
-
-	key, ok := args[flag].(string)
-	if !ok || len(key) == 0 {
-		stderr.Fatalf(nil, "no flag value %s specified", flag)
-		os.Exit(1)
-	}
-
-	if key[0] != '$' {
-		id, err := uuid.FromString(key)
-		if err != nil {
-			stderr.Fatalf(err, "invalid UUID specified as %s flag", flag)
-			os.Exit(1)
-		}
-
-		return id
-	}
-
-	value := os.Getenv(key[1:])
-	if len(value) == 0 {
-		stderr.Fatalf(
-			nil,
-			"no such environment variable: %s (specified as %s flag)",
-			key, flag,
-		)
-		os.Exit(1)
-	}
-
-	id, err := uuid.FromString(value)
+func ParseUuidString(val string) uuid.UUID {
+	id, err := uuid.FromString(val)
 	if err != nil {
-		stderr.Fatalf(
-			err,
-			"invalid UUID specified as %s environment variable (obtained using %s flag)",
-			key,
-			flag,
-		)
+		stderr.Fatalf(err, "invalid UUID: %s", val)
 		os.Exit(1)
 	}
 
 	return id
 }
 
-func MustParseDuration(args map[string]interface{}, flag string) time.Duration {
-	defer func() {
-		tears := recover()
-		if tears != nil {
-			panic(fmt.Sprintf("invalid docopt for %s", flag))
-		}
-	}()
-
-	duration, err := time.ParseDuration(args[flag].(string))
+func MustParseDuration(str string) time.Duration {
+	duration, err := time.ParseDuration(str)
 	if err != nil {
-		stderr.Fatalf(err, "unable to parse %s value as duration", flag)
+		stderr.Fatalf(err, "unable to parse %s value as duration", str)
 		os.Exit(1)
 	}
 
 	return duration
 }
 
-func MustParseInt(args map[string]interface{}, flag string) int {
-	defer func() {
-		tears := recover()
-		if tears != nil {
-			panic(fmt.Sprintf("invalid docopt for %s", flag))
-		}
-	}()
-
-	number, err := strconv.Atoi(args[flag].(string))
+func MustDecodeSecret(str string) []byte {
+	secret, err := base64.StdEncoding.DecodeString(str)
 	if err != nil {
-		stderr.Fatalf(err, "unable to parse %s value as integer", flag)
+		stderr.Fatalf(err, "unable to base64 decode client secret")
 		os.Exit(1)
 	}
 
-	return number
+	return secret
 }
 
 func GetSanitizedArgs() []string {

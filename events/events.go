@@ -1,6 +1,7 @@
 package events
 
 import (
+	"github.com/MagalixCorp/magalix-agent/v2/utils"
 	"sync"
 	"time"
 
@@ -8,7 +9,6 @@ import (
 	"github.com/MagalixCorp/magalix-agent/v2/kuber"
 	"github.com/MagalixCorp/magalix-agent/v2/proc"
 	"github.com/MagalixCorp/magalix-agent/v2/scanner"
-	"github.com/MagalixCorp/magalix-agent/v2/utils"
 	"github.com/MagalixCorp/magalix-agent/v2/watcher"
 	"github.com/MagalixTechnologies/uuid-go"
 	"github.com/reconquest/health-go"
@@ -42,15 +42,12 @@ type Eventer struct {
 
 // InitEvents creates a new eventer then starts it
 func InitEvents(
+	conf *utils.AgentConfig,
 	client *client.Client,
 	kube *kuber.Kube,
-	skipNamespaces []string,
 	scanner *scanner.Scanner,
-	args map[string]interface{},
 ) *Eventer {
-	eventsBufferFlushInterval := utils.MustParseDuration(args, "--events-buffer-flush-interval")
-	eventsBufferSize := utils.MustParseInt(args, "--events-buffer-size")
-	eventer := NewEventer(client, kube, skipNamespaces, scanner, eventsBufferFlushInterval, eventsBufferSize)
+	eventer := NewEventer(client, kube, conf.SkipNamespaces, scanner, conf.EventsBufferFlushInterval, conf.EventsBufferSize)
 	eventer.Start()
 	return eventer
 }

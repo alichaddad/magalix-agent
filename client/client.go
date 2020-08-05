@@ -261,25 +261,26 @@ func (client *Client) AddListener(kind proto.PacketKind, listener func(in []byte
 
 // InitClient inits client
 func InitClient(
-	args map[string]interface{},
-	version string,
-	startID string,
-	accountID, clusterID uuid.UUID,
-	secret []byte,
+	conf *utils.AgentConfig,
 	parentLogger *log.Logger,
 	connected chan bool,
 ) (*Client, error) {
 	client := newClient(
-		args["--gateway"].(string), version, startID, accountID, clusterID, secret,
+		conf.Gateway,
+		conf.Version,
+		conf.StartId.String(),
+		conf.AccountId,
+		conf.ClusterId,
+		conf.ClientSecret,
 		timeouts{
-			protoHandshake: utils.MustParseDuration(args, "--timeout-proto-handshake"),
-			protoWrite:     utils.MustParseDuration(args, "--timeout-proto-write"),
-			protoRead:      utils.MustParseDuration(args, "--timeout-proto-read"),
-			protoReconnect: utils.MustParseDuration(args, "--timeout-proto-reconnect"),
-			protoBackoff:   utils.MustParseDuration(args, "--timeout-proto-backoff"),
+			protoHandshake: conf.TimeoutProtoHandshake,
+			protoWrite:     conf.TimeoutProtoWrite,
+			protoRead:      conf.TimeoutProtoRead,
+			protoReconnect: conf.TimeoutProtoReconnect,
+			protoBackoff:   conf.TimeoutProtoBackoff,
 		},
 		parentLogger,
-		!args["--no-send-logs"].(bool),
+		conf.SendLogs,
 	)
 	go sign.Notify(func(os.Signal) bool {
 		if !client.IsReady() {

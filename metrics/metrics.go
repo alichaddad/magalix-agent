@@ -191,15 +191,13 @@ func sendMetricsBatch(c *client.Client, metrics []*Metric) {
 
 // InitMetrics init metrics source
 func InitMetrics(
+	conf *utils.AgentConfig,
 	client *client.Client,
 	nodesProvider NodesProvider,
 	entitiesProvider EntitiesProvider,
 	kube *kuber.Kube,
-	optInAnalysisData bool,
-	args map[string]interface{},
 ) error {
 	var (
-		metricsInterval = utils.MustParseDuration(args, "--metrics-interval")
 		failOnError     = false // whether the agent will fail to start if an error happened during init metric source
 
 		metricsSources = []MetricsSource{}
@@ -207,12 +205,11 @@ func InitMetrics(
 	)
 
 	metricsSourcesNames := []string{"kubelet"}
-	if names, ok := args["--source"].([]string); ok && len(names) > 0 {
-		metricsSourcesNames = names
+	if len(conf.MetricsSources) > 0 {
 		failOnError = true
 	}
 
-	kubeletClient, err := NewKubeletClient(client.Logger, nodesProvider, kube, args)
+	kubeletClient, err := NewKubeletClient(client.Logger, nodesProvider, kube, conf.KubeletPort)
 	if err != nil {
 		foundErrors = append(foundErrors, err)
 		failOnError = true
@@ -226,14 +223,14 @@ func InitMetrics(
 			kubelet, err := NewKubelet(
 				kubeletClient,
 				client.Logger,
-				metricsInterval,
+				conf.MetricsInterval,
 				kubeletTimeouts{
 					backoff: backOff{
-						sleep:      utils.MustParseDuration(args, "--kubelet-backoff-sleep"),
-						maxRetries: utils.MustParseInt(args, "--kubelet-backoff-max-retries"),
+						sleep:      conf.KubeletBackoffSleep,
+						maxRetries: conf.KubeletBackoffMaxRetries,
 					},
 				},
-				optInAnalysisData,
+				conf.OptInAnalysisData,
 			)
 			if err != nil {
 				foundErrors = append(foundErrors, karma.Format(
@@ -256,7 +253,7 @@ func InitMetrics(
 			client,
 			source,
 			entitiesProvider,
-			metricsInterval,
+			conf.MetricsInterval,
 		)
 	}
 

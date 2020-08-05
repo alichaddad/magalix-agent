@@ -1,15 +1,7 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
-	"net/http"
-	"os"
-	"strings"
-	"time"
-
-	"k8s.io/client-go/util/cert"
-
 	"github.com/MagalixCorp/magalix-agent/v2/client"
 	"github.com/MagalixCorp/magalix-agent/v2/entities"
 	"github.com/MagalixCorp/magalix-agent/v2/executor"
@@ -25,6 +17,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/cert"
+	"net/http"
+	_ "net/http/pprof"
+	"os"
+	"strconv"
+	"strings"
+	"time"
 )
 
 var usage = `agent - magalix services agent.
@@ -47,7 +46,7 @@ Options:
   --kube-insecure                            Insecure skip SSL verify.
   --kube-root-ca-cert <filepath>             Filepath to root CA cert.
   --kube-token <token>                        Use specified token for access to kubernetes cluster.
-  --kube-incluster                           Automatically determine kubernetes clientset
+  --kube-incluster                           Automatically determine kubernetes client set
                                               configuration. Works only if program is
                                               running inside kubernetes cluster.
   --kube-timeout <duration>                  Timeout of requests to kubernetes apis.
@@ -88,7 +87,7 @@ Options:
   --opt-in-analysis-data                     Send anonymous data for analysis.
   --analysis-data-interval <duration>        Analysis data send interval.
                                               [default: 5m]
-  --packets-v2                               Enable v2 packets (without ids). This is deprecated and kept for backward compatability.
+  --packets-v2                               Enable v2 packets (without ids). This is deprecated and kept for backward compatibility.
   --disable-metrics                          Disable metrics collecting and sending.
   --disable-events                           Disable events collecting and sending.
   --disable-scalar                           Disable in-agent scalar.
@@ -106,7 +105,55 @@ Options:
 
 var version = "[manual build]"
 
-var startID string
+type Args struct {
+	Gateway      string `docopt:"--gateway"`
+	AccountId    string `docopt:"--account-id"`
+	ClusterId    string `docopt:"--cluster-id"`
+	ClientSecret string `docopt:"--client-secret"`
+
+	KubeUrl        string `docopt:"--kube-url"`
+	KubeInsecure   bool   `docopt:"--kube-insecure"`
+	KubeRootCaCert string `docopt:"--kube-root-ca-cert"`
+	KubeToken      string `docopt:"--kube-token"`
+	KubeInCluster  bool   `docopt:"--kube-incluster"`
+	KubeTimeout    string `docopt:"--kube-timeout"`
+
+	SkipNamespaces []string `docopt:"--skip-namespace"`
+	MetricsSources []string `docopt:"--source"`
+
+	KubeletPort              int    `docopt:"--kubelet-port"`
+	KubeletBackoffMaxRetries int    `docopt:"--kubelet-backoff-max-retries"`
+	KubeletBackoffSleep      string `docopt:"--kubelet-backoff-sleep"`
+
+	MetricsInterval           string `docopt:"--metrics-interval"`
+	EventsBufferFlushInterval string `docopt:"--events-buffer-flush-interval"`
+	EventsBufferSize          int    `docopt:"--events-buffer-size"`
+	ExecutorWorkers           int    `docopt:"--executor-workers"`
+
+	TimeoutProtoHandshake string `docopt:"--timeout-proto-handshake"`
+	TimeoutProtoWrite     string `docopt:"--timeout-proto-write"`
+	TimeoutProtoRead      string `docopt:"--timeout-proto-read"`
+	TimeoutProtoReconnect string `docopt:"--timeout-proto-reconnect"`
+	TimeoutProtoBackoff   string `docopt:"--timeout-proto-backoff"`
+
+	OptInAnalysisData    bool   `docopt:"--opt-in-analysis-data"`
+	AnalysisDataInterval string `docopt:"--analysis-data-interval"`
+
+	DisableMetrics bool `docopt:"--disable-metrics"`
+	DisableEvents  bool `docopt:"--disable-events"`
+	DisableScalar  bool `docopt:"--disable-scalar"`
+	NoSendLogs     bool `docopt:"--no-send-logs"`
+
+	PacketsV2 bool `docopt:"--packets-v2"`
+
+	Port int `docopt:"--port"`
+
+	DryRun bool `docopt:"--dry-run"`
+
+	Debug    bool   `docopt:"--debug"`
+	Trace    bool   `docopt:"--trace"`
+	TraceLog string `docopt:"--trace-log"`
+}
 
 const (
 	entitiesSyncTimeout = time.Minute
@@ -120,18 +167,69 @@ func getVersion() string {
 	}, "\n")
 }
 
+func getConfig(args *Args, startId uuid.UUID) *utils.AgentConfig {
+	utils.ExpandEnv(&args.AccountId)
+	utils.ExpandEnv(&args.ClusterId)
+	utils.ExpandEnv(&args.ClientSecret)
+
+	return &utils.AgentConfig{
+		Gateway:                   args.Gateway,
+		StartId:                   startId,
+		AccountId:                 utils.ParseUuidString(args.AccountId),
+		ClusterId:                 utils.ParseUuidString(args.ClusterId),
+		ClientSecret:              utils.MustDecodeSecret(args.ClientSecret),
+		KubeUrl:                   args.KubeUrl,
+		KubeInsecure:              args.KubeInsecure,
+		KubeRootCaCert:            args.KubeRootCaCert,
+		KubeToken:                 args.KubeToken,
+		KubeInCluster:             args.KubeInCluster,
+		KubeTimeout:               utils.MustParseDuration(args.KubeTimeout),
+		SkipNamespaces:            args.SkipNamespaces,
+		MetricsSources:            args.MetricsSources,
+		MetricsInterval:           utils.MustParseDuration(args.MetricsInterval),
+		EventsBufferFlushInterval: utils.MustParseDuration(args.EventsBufferFlushInterval),
+		EventsBufferSize:          args.EventsBufferSize,
+		ExecutorWorkers:           args.ExecutorWorkers,
+		KubeletPort:               args.KubeletPort,
+		KubeletBackoffMaxRetries:  args.KubeletBackoffMaxRetries,
+		KubeletBackoffSleep:       utils.MustParseDuration(args.KubeletBackoffSleep),
+		TimeoutProtoHandshake:     utils.MustParseDuration(args.TimeoutProtoHandshake),
+		TimeoutProtoWrite:         utils.MustParseDuration(args.TimeoutProtoBackoff),
+		TimeoutProtoRead:          utils.MustParseDuration(args.TimeoutProtoRead),
+		TimeoutProtoReconnect:     utils.MustParseDuration(args.TimeoutProtoReconnect),
+		TimeoutProtoBackoff:       utils.MustParseDuration(args.TimeoutProtoBackoff),
+		OptInAnalysisData:         args.OptInAnalysisData,
+		AnalysisDataInterval:      utils.MustParseDuration(args.AnalysisDataInterval),
+		MetricsEnabled:            !args.DisableMetrics,
+		EventsEnabled:             !args.DisableEvents,
+		SendLogs:                  !args.NoSendLogs,
+		Port:                      args.Port,
+		DryRun:                    args.DryRun,
+		Debug:                     args.Debug,
+		Trace:                     args.Trace,
+		TraceLog:                  args.TraceLog,
+		Version:                   version,
+	}
+}
+
 func main() {
-	startID = uuid.NewV4().String()
-	args, err := docopt.ParseArgs(usage, nil, getVersion())
+	opts, err := docopt.ParseArgs(usage, nil, getVersion())
+	if err != nil {
+		panic(err)
+	}
+
+	args := &Args{}
+	err = opts.Bind(args)
 	if err != nil {
 		panic(err)
 	}
 
 	logger := log.New(
-		args["--debug"].(bool),
-		args["--trace"].(bool),
-		args["--trace-log"].(string),
+		args.Debug,
+		args.Trace,
+		args.TraceLog,
 	)
+
 	// we need to disable default exit 1 for FATAL messages because we also
 	// need to send fatal messages on the remote server and send bye packet
 	// after fatal message (if we can), therefore all exits will be controlled
@@ -145,29 +243,16 @@ func main() {
 		"magalix agent started.....",
 	)
 
-	secret, err := base64.StdEncoding.DecodeString(
-		utils.ExpandEnv(args, "--client-secret", false),
-	)
-	if err != nil {
-		logger.Fatalf(
-			err,
-			"unable to decode base64 secret specified as --client-secret flag",
-		)
-		os.Exit(1)
-	}
+	startID := uuid.NewV4()
+	conf := getConfig(args, startID)
+
 	// TODO: remove
 	// a hack to set default timeout for all http requests
 	http.DefaultClient = &http.Client{
 		Timeout: 20 * time.Second,
 	}
 
-	var (
-		accountID = utils.ExpandEnvUUID(args, "--account-id")
-		clusterID = utils.ExpandEnvUUID(args, "--cluster-id")
-	)
-
-	port := args["--port"].(string)
-	probes := NewProbesServer(":"+port, logger)
+	probes := NewProbesServer(":"+strconv.Itoa(args.Port), logger)
 	go func() {
 		err = probes.Start()
 		if err != nil {
@@ -177,7 +262,10 @@ func main() {
 	}()
 
 	connected := make(chan bool)
-	gwClient, err := client.InitClient(args, version, startID, accountID, clusterID, secret, logger, connected)
+	gwClient, err := client.InitClient(
+		conf,
+		logger,
+		connected)
 
 	defer gwClient.WaitExit()
 	defer gwClient.Recover()
@@ -191,26 +279,13 @@ func main() {
 	<-connected
 	logger.Infof(nil, "Connected and authorized")
 	probes.Authorized = true
-	initAgent(args, gwClient, logger, accountID, clusterID)
+	initAgent(conf, gwClient, logger)
 }
 
-func initAgent(args docopt.Opts, gwClient *client.Client, logger *log.Logger, accountID uuid.UUID, clusterID uuid.UUID) {
+func initAgent(conf *utils.AgentConfig, gwClient *client.Client, logger *log.Logger) {
 	logger.Infof(nil, "Initializing Agent")
-	var (
-		metricsEnabled = !args["--disable-metrics"].(bool)
-		// eventsEnabled   = !args["--disable-events"].(bool)
-		//scalarEnabled   = !args["--disable-scalar"].(bool)
-		executorWorkers = utils.MustParseInt(args, "--executor-workers")
-		dryRun          = args["--dry-run"].(bool)
 
-		skipNamespaces []string
-	)
-
-	if namespaces, ok := args["--skip-namespace"].([]string); ok {
-		skipNamespaces = namespaces
-	}
-
-	kRestConfig, err := getKRestConfig(logger, args)
+	kRestConfig, err := getKRestConfig(logger, conf)
 
 	dynamicClient, err := dynamic.NewForConfig(kRestConfig)
 	parentsStore := kuber.NewParentsStore()
@@ -233,12 +308,6 @@ func initAgent(args docopt.Opts, gwClient *client.Client, logger *log.Logger, ac
 		os.Exit(1)
 	}
 
-	optInAnalysisData := args["--opt-in-analysis-data"].(bool)
-	analysisDataInterval := utils.MustParseDuration(
-		args,
-		"--analysis-data-interval",
-	)
-
 	var entityScanner *scanner.Scanner
 
 	ew := entities.NewEntitiesWatcher(logger, observer, gwClient)
@@ -247,26 +316,18 @@ func initAgent(args docopt.Opts, gwClient *client.Client, logger *log.Logger, ac
 		logger.Fatalf(err, "unable to start entities watcher")
 	}
 
-	/*if scalarEnabled {
-		scalar2.InitScalars(logger, kube, observer, dryRun)
-	}*/
-
 	entityScanner = scanner.InitScanner(
+		conf,
 		gwClient,
 		scanner.NewKuberFromObserver(ew),
-		skipNamespaces,
-		accountID,
-		clusterID,
-		optInAnalysisData,
-		analysisDataInterval,
 	)
 
 	e := executor.InitExecutor(
 		gwClient,
 		kube,
 		entityScanner,
-		executorWorkers,
-		dryRun,
+		conf.ExecutorWorkers,
+		conf.DryRun,
 	)
 
 	gwClient.AddListener(proto.PacketKindDecision, e.Listener)
@@ -279,18 +340,19 @@ func initAgent(args docopt.Opts, gwClient *client.Client, logger *log.Logger, ac
 		return nil, nil
 	})
 
-	// @TODO reallow events when we start using them
-	/* if eventsEnabled {
-	 	events.InitEvents(
-	 		gwClient,
-	 		kube,
-	 		skipNamespaces,
-			entityScanner,
-	 		args,
-	 	)
-	 } */
+	// @TODO re-allow events when we start using them
+	//if conf.EventsEnabled {
+	//
+	//	events.InitEvents(
+	//		conf,
+	//		gwClient,
+	//		kube,
+	//		entityScanner,
+	//	)
+	//}
 
-	if metricsEnabled {
+	if conf.MetricsEnabled {
+
 		var nodesProvider metrics.NodesProvider
 		var entitiesProvider metrics.EntitiesProvider
 
@@ -298,19 +360,17 @@ func initAgent(args docopt.Opts, gwClient *client.Client, logger *log.Logger, ac
 		entitiesProvider = observer
 
 		err := metrics.InitMetrics(
+			conf,
 			gwClient,
 			nodesProvider,
 			entitiesProvider,
 			kube,
-			optInAnalysisData,
-			args,
 		)
 		if err != nil {
 			gwClient.Fatalf(err, "unable to initialize metrics sources")
 			os.Exit(1)
 		}
 	}
-
 
 	go func() {
 		http.ListenAndServe("localhost:6060", nil)
@@ -319,9 +379,9 @@ func initAgent(args docopt.Opts, gwClient *client.Client, logger *log.Logger, ac
 
 func getKRestConfig(
 	logger *log.Logger,
-	args map[string]interface{},
+	agentConfig *utils.AgentConfig,
 ) (config *rest.Config, err error) {
-	if args["--kube-incluster"].(bool) {
+	if agentConfig.KubeInCluster {
 		logger.Infof(nil, "initializing kubernetes incluster config")
 
 		config, err = rest.InClusterConfig()
@@ -338,36 +398,32 @@ func getKRestConfig(
 			"initializing kubernetes user-defined config",
 		)
 
-		token, _ := args["--kube-token"].(string)
-		if token == "" {
-			token = os.Getenv("KUBE_TOKEN")
+		if agentConfig.KubeToken == "" {
+			agentConfig.KubeToken = os.Getenv("KUBE_TOKEN")
 		}
 
 		config = &rest.Config{}
 		config.ContentType = runtime.ContentTypeJSON
 		config.APIPath = "/api"
-		config.Host = args["--kube-url"].(string)
-		config.BearerToken = token
+		config.Host = agentConfig.KubeUrl
+		config.BearerToken = agentConfig.KubeToken
 
 		{
 			tlsClientConfig := rest.TLSClientConfig{}
-			rootCAFile, ok := args["--kube-root-ca-cert"].(string)
-			if ok {
-				if _, err := cert.NewPool(rootCAFile); err != nil {
-					fmt.Printf("Expected to load root CA config from %s, but got err: %v", rootCAFile, err)
-				} else {
-					tlsClientConfig.CAFile = rootCAFile
-				}
-				config.TLSClientConfig = tlsClientConfig
+			if _, err := cert.NewPool(agentConfig.KubeRootCaCert); err != nil {
+				fmt.Printf("Expected to load root CA config from %s, but got err: %v", agentConfig.KubeRootCaCert, err)
+			} else {
+				tlsClientConfig.CAFile = agentConfig.KubeRootCaCert
 			}
+			config.TLSClientConfig = tlsClientConfig
 		}
 
-		if args["--kube-insecure"].(bool) {
+		if agentConfig.KubeInsecure {
 			config.Insecure = true
 		}
 	}
 
-	config.Timeout = utils.MustParseDuration(args, "--kube-timeout")
+	config.Timeout = agentConfig.KubeTimeout
 
 	return
 }

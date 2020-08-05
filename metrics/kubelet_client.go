@@ -10,6 +10,7 @@ import (
 	"k8s.io/client-go/rest"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -341,9 +342,8 @@ func NewKubeletClient(
 	logger *log.Logger,
 	nodesProvider NodesProvider,
 	kube *kuber.Kube,
-	args map[string]interface{},
+	kubeletPort int,
 ) (*KubeletClient, error) {
-
 	restClient, ok := kube.Clientset.RESTClient().(*rest.RESTClient)
 	if !ok {
 		return nil, karma.Format(
@@ -360,7 +360,7 @@ func NewKubeletClient(
 		kube:       kube,
 		restClient: restClient,
 
-		httpPort: args["--kubelet-port"].(string),
+		httpPort: strconv.Itoa(kubeletPort),
 	}
 
 	err := client.init()
